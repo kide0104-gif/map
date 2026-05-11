@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的地圖 (使用 NLSC 底圖與路徑規劃)</title>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+     crossorigin=""/>
+     
+    <!-- 引入 FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            overflow: hidden;
+        }
+
+        #app-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+            position: relative;
+        }
+
+        #sidebar {
+            width: 320px;
+            background-color: white;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.3s ease;
+            position: absolute;
+            height: 100%;
+            left: 0;
+            top: 0;
+        }
+
+        @media (max-width: 768px) {
+            #sidebar {
+                width: 100%;
+                max-width: 350px;
+                transform: translateX(-100%);
+            }
+            #sidebar.open {
+                transform: translateX(0);
+            }
+        }
+
+        #map-container {
+            flex-grow: 1;
+            height: 100%;
+            width: 100%;
+            position: relative;
+            z-index: 1;
+        }
+
+        #map { width: 100%; height: 100%; }
+
+        .custom-popup .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+            padding: 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+        }
+        .custom-popup .leaflet-popup-content { margin: 0; line-height: 1.5; }
+        
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid #3b82f6;
+            width: 20px; height: 20px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hide-scrollbar::-webkit-scrollbar { width: 0px; background: transparent; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* 拖曳樣式 */
+        .poi-list-item.dragging {
+            opacity: 0.5;
+            background-color: #f3f4f6;
+            border: 2px dashed #3b82f6;
+        }
+        .drag-over {
+            border-top: 2px solid #3b82f6 !important;
+        }
+
+        /* 數字標記樣式 */
+        .custom-div-icon {
+            background: transparent;
+            border: none;
+        }
+        .marker-number {
+            background-color: #ef4444; /* Tailwind red-500 */
+            color: white;
+            border-radius: 50%;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            font-weight: bold;
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+        .marker-number:hover {
+            transform: scale(1.1);
+            background-color: #dc2626; /* Tailwind red-600 */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app-container">
+        
+        <button id="mobile-menu-btn" class="md:hidden absolute top-4 left-4 z-[2000] bg-white p-2 rounded-md shadow-md text-gray-700 hover:bg-gray-100">
+            <i class="fas fa-bars text-xl"></i>
+        </button>
+
+        <div id="sidebar" class="flex flex-col h-full bg-white relative">
+            <button id="close-sidebar-btn" class="md:hidden absolute top-4 right-4 text-gray-500 hover:text-gray-800">
+                <i class="fas fa-times text-xl"></i>
+            </button>
+
+            <div class="p-4 border-b border-gray-200 bg-blue-600 text-white flex justify-between items-center">
+                <div>
+                    <h1 class="text-xl font-bold flex items-center gap-2">
+                        <i class="fas fa-map-marked-alt"></i>
+                        我的台灣地圖
+                    </h1>
+                    <p class="text-xs text-blue-200 mt-1">雲端儲存 & 自動路徑規劃</p>
+                </div>
+                <div id="sync-status" class="text-xs flex items-center gap-1 text-blue-200" title="連線狀態">
+                    <i class="fas fa-sync fa-spin"></i>
+                </div>
+            </div>
+
+            <div class="p-4 border-b border-gray-200 bg-gray-50">
+                <div class="relative">
+                    <input type="text" id="search-input" placeholder="搜尋地點 (例如：台北車站)" 
+                           class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <i class="fas fa-search text-gray-400"></i>
+                    </div>
+                    <div class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                        <div id="search-loader" class="loader"></div>
+                    </div>
+                </div>
+                <div id="search-results" class="hidden mt-2 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-y-auto z-50 absolute w-[calc(100%-2rem)]"></div>
+            </div>
+
+            <div class="p-4 border-b border-gray-200">
+                <h2 class="text-sm font-semibold text-gray-600 mb-2">選擇底圖</h2>
+                <div class="flex flex-col gap-2">
+                    <label class="flex items-center space-x-2 text-sm cursor-pointer">
+                        <input type="radio" name="basemap" value="EMAP" checked class="form-radio text-blue-600">
+                        <span>臺灣通用電子地圖 (預設)</span>
+                    </label>
+                    <label class="flex items-center space-x-2 text-sm cursor-pointer">
+                        <input type="radio" name="basemap" value="PHOTO2" class="form-radio text-blue-600">
+                        <span>正射影像圖 (衛星空照)</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="p-4 flex-grow flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center mb-3">
+                    <h2 class="text-md font-bold text-gray-800">興趣點路線 (<span id="poi-count">0</span>)</h2>
+                    <button id="clear-all-btn" class="text-xs text-red-500 hover:text-red-700 hidden">清空</button>
+                </div>
+                
+                <p class="text-xs text-gray-500 mb-3 bg-blue-50 p-2 rounded border border-blue-100 leading-relaxed">
+                    <i class="fas fa-info-circle text-blue-500 mr-1"></i>
+                    在地圖上<b>點擊</b>新增地點。<br>在下方列表<b>拖曳</b>可排序並重算路徑。
+                </p>
+
+                <div id="poi-list" class="flex-grow overflow-y-auto hide-scrollbar space-y-2 pb-10 relative">
+                    <div id="empty-state" class="text-center text-gray-400 py-8 flex flex-col items-center">
+                        <i class="far fa-map text-3xl mb-2 text-gray-300"></i>
+                        <p class="text-sm">尚未新增任何興趣點</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="map-container">
+            <div id="map"></div>
+        </div>
+        
+        <!-- 自訂確認對話框 Modal -->
+        <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-50 z-[3000] hidden flex justify-center items-center">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-80 max-w-[90%]">
+                <h3 class="text-lg font-bold text-gray-800 mb-2">確認清空</h3>
+                <p class="text-sm text-gray-600 mb-6">確定要刪除所有興趣點與路線嗎？此動作無法復原。</p>
+                <div class="flex justify-end gap-3">
+                    <button id="modal-cancel-btn" class="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md transition-colors">取消</button>
+                    <button id="modal-confirm-btn" class="px-4 py-2 text-sm bg-red-500 text-white hover:bg-red-600 rounded-md transition-colors">確認刪除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 引入 Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+     crossorigin=""></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 環境變數安全檢查
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'demo-map-app';
+        let firebaseConfig;
+        try {
+            firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        } catch (e) {
+            console.error("Firebase config parsing error", e);
+            firebaseConfig = {};
+        }
+
+        // 應用程式狀態
+        const state = {
+            pois: [], 
+            currentBasemap: 'EMAP',
+            userId: null,
+            dbRef: null // 指向 Firestore 特定文件的參照
+        };
+
+        const markers = {};
+        let routeLayer = null; // 路徑圖層
+
+        // DOM 元素
+        const elements = {
+            map: document.getElementById('map'),
+            sidebar: document.getElementById('sidebar'),
+            mobileBtn: document.getElementById('mobile-menu-btn'),
+            closeBtn: document.getElementById('close-sidebar-btn'),
+            searchInput: document.getElementById('search-input'),
+            searchResults: document.getElementById('search-results'),
+            searchLoader: document.getElementById('search-loader'),
+            basemapRadios: document.querySelectorAll('input[name="basemap"]'),
+            poiList: document.getElementById('poi-list'),
+            poiCount: document.getElementById('poi-count'),
+            emptyState: document.getElementById('empty-state'),
+            clearAllBtn: document.getElementById('clear-all-btn'),
+            syncStatus: document.getElementById('sync-status'),
+            confirmModal: document.getElementById('confirm-modal'),
+            modalCancelBtn: document.getElementById('modal-cancel-btn'),
+            modalConfirmBtn: document.getElementById('modal-confirm-btn')
+        };
+
+        // 地圖初始化
+        const map = L.map('map', {
+            center: [23.973875, 120.982024],
+            zoom: 7,
+            zoomControl: false 
+        });
+        L.control.zoom({ position: 'topright' }).addTo(map);
+
+        const nlscUrlTemplate = 'https://wmts.nlsc.gov.tw/wmts/{layer}/default/GoogleMapsCompatible/{z}/{y}/{x}';
+        const basemaps = {
+            'EMAP': L.tileLayer(nlscUrlTemplate.replace('{layer}', 'EMAP'), {
+                maxZoom: 20, attribution: '© 內政部國土測繪中心'
+            }),
+            'PHOTO2': L.tileLayer(nlscUrlTemplate.replace('{layer}', 'PHOTO2'), {
+                maxZoom: 20, attribution: '© 內政部國土測繪中心 (正射影像)'
+            })
+        };
+        basemaps[state.currentBasemap].addTo(map);
+
+        elements.basemapRadios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                map.removeLayer(basemaps[state.currentBasemap]);
+                basemaps[e.target.value].addTo(map);
+                state.currentBasemap = e.target.value;
+            });
+        });
+
+        async function initFirebase() {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.warn("未提供 Firebase 設定，將進入離線模式");
+                elements.syncStatus.innerHTML = '<i class="fas fa-wifi text-red-300"></i> 離線';
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
+
+                // 處理驗證
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                state.userId = auth.currentUser.uid;
+                
+                // 設定單一文檔參照: /artifacts/{appId}/users/{userId}/maps/defaultMap
+                state.dbRef = doc(db, 'artifacts', appId, 'users', state.userId, 'maps', 'defaultMap');
+
+                // 監聽遠端資料變更
+                onSnapshot(state.dbRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        state.pois = data.pois || [];
+                    } else {
+                        state.pois = [];
+                    }
+                    elements.syncStatus.innerHTML = '<i class="fas fa-cloud-check text-green-300"></i> 已同步';
+                    renderMapAndList();
+                }, (error) => {
+                    console.error("Firestore listen error:", error);
+                    elements.syncStatus.innerHTML = '<i class="fas fa-exclamation-triangle text-orange-300"></i> 同步錯誤';
+                });
+
+            } catch (error) {
+                console.error("Firebase 初始化失敗", error);
+                elements.syncStatus.innerHTML = '<i class="fas fa-times-circle text-red-300"></i> 連線失敗';
+            }
+        }
+
+        async function syncToFirebase() {
+            if (!state.dbRef) return; // 若無 Firebase 則略過
+            elements.syncStatus.innerHTML = '<i class="fas fa-sync fa-spin text-blue-200"></i> 同步中';
+            try {
+                await setDoc(state.dbRef, { pois: state.pois });
+            } catch (error) {
+                console.error("寫入 Firebase 失敗", error);
+                elements.syncStatus.innerHTML = '<i class="fas fa-exclamation-circle text-red-300"></i> 儲存失敗';
+            }
+        }
+
+        async function updateRoute() {
+            // 清除舊路徑
+            if (routeLayer) {
+                map.removeLayer(routeLayer);
+                routeLayer = null;
+            }
+
+            // 少於2個點無法繪製路徑
+            if (state.pois.length < 2) return;
+
+            // 準備 OSRM 座標字串 (經度,緯度;經度,緯度)
+            const coords = state.pois.map(p => `${p.lng},${p.lat}`).join(';');
+            const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                    const geojson = data.routes[0].geometry;
+                    
+                    // 使用 L.geoJSON 繪製路徑
+                    routeLayer = L.geoJSON(geojson, {
+                        style: {
+                            color: '#3b82f6', // Tailwind blue-500
+                            weight: 5,
+                            opacity: 0.8,
+                            dashArray: '10, 10', // 虛線效果增加設計感
+                            lineJoin: 'round'
+                        }
+                    }).addTo(map);
+                }
+            } catch (error) {
+                console.error("路徑計算失敗:", error);
+            }
+        }
+
+        function renderMapAndList() {
+            // 清理現有 Markers
+            Object.values(markers).forEach(marker => map.removeLayer(marker));
+            for (let key in markers) delete markers[key];
+
+            elements.poiCount.textContent = state.pois.length;
+            
+            // UI 狀態更新
+            if (state.pois.length === 0) {
+                elements.emptyState.style.display = 'flex';
+                elements.clearAllBtn.classList.add('hidden');
+                Array.from(elements.poiList.children).forEach(child => {
+                    if (child.id !== 'empty-state') child.remove();
+                });
+                updateRoute(); // 清除路徑
+                return;
+            }
+
+            elements.emptyState.style.display = 'none';
+            elements.clearAllBtn.classList.remove('hidden');
+            Array.from(elements.poiList.children).forEach(child => {
+                if (child.id !== 'empty-state') child.remove();
+            });
+
+            // 根據順序渲染 Marker 與 列表
+            state.pois.forEach((poi, index) => {
+                // 1. 建立地圖上的數字 Marker
+                const numberIcon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<div class='marker-number'>${index + 1}</div>`,
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 14],
+                    popupAnchor: [0, -14]
+                });
+
+                const marker = L.marker([poi.lat, poi.lng], {
+                    icon: numberIcon,
+                    draggable: true
+                }).addTo(map);
+
+                bindPopupContent(marker, poi, index);
+
+                marker.on('dragend', function() {
+                    const newLatLng = marker.getLatLng();
+                    poi.lat = newLatLng.lat;
+                    poi.lng = newLatLng.lng;
+                    if (poi.title.startsWith('標記點 (')) {
+                        poi.title = `標記點 (${poi.lat.toFixed(4)}, ${poi.lng.toFixed(4)})`;
+                    }
+                    syncToFirebase(); // 同步變更，這會觸發重新渲染
+                });
+
+                marker.on('click', () => highlightListItem(poi.id));
+                markers[poi.id] = marker;
+
+                // 2. 建立列表項目 (支援 Drag & Drop)
+                const item = document.createElement('div');
+                item.className = 'poi-list-item flex items-center p-3 bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-all cursor-pointer group relative';
+                item.id = `list-item-${poi.id}`;
+                item.draggable = true; // 允許拖曳
+                item.dataset.index = index;
+
+                item.innerHTML = `
+                    <div class="mr-3 text-gray-400 cursor-grab hover:text-blue-500 drag-handle">
+                        <i class="fas fa-grip-vertical"></i>
+                    </div>
+                    <div class="flex-shrink-0 w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold mr-3 shadow-sm">
+                        ${index + 1}
+                    </div>
+                    <div class="flex-grow min-w-0 pr-6">
+                        <h4 class="font-semibold text-gray-800 text-sm truncate" title="${escapeHTML(poi.title)}">${escapeHTML(poi.title)}</h4>
+                        <p class="text-xs text-gray-500 mt-1 truncate">${escapeHTML(poi.description) || '無說明'}</p>
+                    </div>
+                    <button class="delete-btn absolute right-3 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-2" title="刪除">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                `;
+
+                // 綁定事件
+                item.addEventListener('click', (e) => {
+                    if (!e.target.closest('.delete-btn') && !e.target.closest('.drag-handle')) {
+                        flyToPOI(poi.id);
+                        highlightListItem(poi.id);
+                    }
+                });
+
+                item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deletePOI(poi.id);
+                });
+
+                // Drag & Drop 邏輯
+                setupDragAndDrop(item);
+
+                elements.poiList.appendChild(item);
+            });
+
+            // 更新路線
+            updateRoute();
+        }
+
+        function setupDragAndDrop(item) {
+            item.addEventListener('dragstart', (e) => {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', item.dataset.index);
+                setTimeout(() => item.classList.add('dragging'), 0);
+            });
+
+            item.addEventListener('dragend', () => {
+                item.classList.remove('dragging');
+                document.querySelectorAll('.poi-list-item').forEach(el => el.classList.remove('drag-over'));
+            });
+
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                item.classList.add('drag-over');
+            });
+
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('drag-over');
+            });
+
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                item.classList.remove('drag-over');
+                const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+                const targetIndex = parseInt(item.dataset.index, 10);
+
+                if (draggedIndex === targetIndex) return;
+
+                // 重新排序陣列
+                const draggedItem = state.pois[draggedIndex];
+                state.pois.splice(draggedIndex, 1); // 移除原本的
+                state.pois.splice(targetIndex, 0, draggedItem); // 插入新位置
+
+                // 由於我們是在本地變更後再同步，為了即時反應，先強制渲染一次本地畫面，再傳給 Firebase
+                renderMapAndList();
+                syncToFirebase();
+            });
+        }
+
+        map.on('click', function(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            const id = 'poi_' + Date.now();
+            const title = `標記點 (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+            
+            state.pois.push({ id, lat, lng, title, description: '', timestamp: Date.now() });
+            
+            // 立即渲染本地並同步
+            renderMapAndList();
+            syncToFirebase();
+            
+            if (markers[id]) markers[id].openPopup();
+            if (window.innerWidth <= 768) elements.sidebar.classList.remove('open');
+        });
+
+        function bindPopupContent(marker, poi, index) {
+            const content = document.createElement('div');
+            content.className = 'p-3 min-w-[200px]';
+            
+            // 檢視模式
+            const viewMode = document.createElement('div');
+            viewMode.innerHTML = `
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold">${index + 1}</span>
+                    <h3 class="font-bold text-lg text-gray-800 truncate">${escapeHTML(poi.title)}</h3>
+                </div>
+                <p class="text-sm text-gray-600 mb-3 whitespace-pre-line">${escapeHTML(poi.description) || '<i>無說明</i>'}</p>
+                <div class="text-xs text-gray-400 mb-3 font-mono">${poi.lat.toFixed(5)}, ${poi.lng.toFixed(5)}</div>
+                <div class="flex justify-end space-x-2">
+                    <button class="edit-btn text-blue-500 hover:text-blue-700 text-sm px-2 py-1 rounded bg-blue-50">編輯</button>
+                </div>
+            `;
+
+            // 編輯模式
+            const editMode = document.createElement('div');
+            editMode.className = 'hidden flex flex-col space-y-2';
+            editMode.innerHTML = `
+                <input type="text" class="edit-title w-full border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-500" value="${escapeHTML(poi.title)}" placeholder="地點名稱">
+                <textarea class="edit-desc w-full border border-gray-300 rounded px-2 py-1 text-sm h-20 resize-none focus:outline-none focus:border-blue-500" placeholder="新增說明...">${escapeHTML(poi.description)}</textarea>
+                <div class="flex justify-end space-x-2 mt-2">
+                    <button class="cancel-btn text-gray-500 hover:text-gray-700 text-sm px-2 py-1">取消</button>
+                    <button class="save-btn bg-blue-500 hover:bg-blue-600 text-white text-sm px-3 py-1 rounded shadow">儲存</button>
+                </div>
+            `;
+
+            content.appendChild(viewMode);
+            content.appendChild(editMode);
+
+            // 綁定按鈕事件
+            viewMode.querySelector('.edit-btn').addEventListener('click', () => {
+                viewMode.classList.add('hidden');
+                editMode.classList.remove('hidden');
+            });
+
+            editMode.querySelector('.cancel-btn').addEventListener('click', () => {
+                editMode.classList.add('hidden');
+                viewMode.classList.remove('hidden');
+            });
+
+            editMode.querySelector('.save-btn').addEventListener('click', () => {
+                poi.title = editMode.querySelector('.edit-title').value.trim() || '未命名地點';
+                poi.description = editMode.querySelector('.edit-desc').value.trim();
+                syncToFirebase();
+                // onSnapshot 會觸發重新渲染，但為了流暢我們先重畫內容
+                bindPopupContent(marker, poi, index);
+            });
+
+            marker.bindPopup(content, { className: 'custom-popup', minWidth: 220 });
+        }
+
+        function deletePOI(id) {
+            map.closePopup();
+            state.pois = state.pois.filter(p => p.id !== id);
+            renderMapAndList();
+            syncToFirebase();
+        }
+
+        function flyToPOI(id) {
+            const poi = state.pois.find(p => p.id === id);
+            if (poi) {
+                map.flyTo([poi.lat, poi.lng], 15, { duration: 1.5 });
+                setTimeout(() => { if (markers[id]) markers[id].openPopup(); }, 1500);
+                if (window.innerWidth <= 768) elements.sidebar.classList.remove('open');
+            }
+        }
+
+        function highlightListItem(id) {
+            document.querySelectorAll('.poi-list-item').forEach(el => el.classList.remove('ring-2', 'ring-blue-400', 'border-transparent'));
+            const item = document.getElementById(`list-item-${id}`);
+            if (item) {
+                item.classList.add('ring-2', 'ring-blue-400', 'border-transparent');
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        // 自訂的清空確認 Modal (取代 confirm)
+        elements.clearAllBtn.addEventListener('click', () => {
+            elements.confirmModal.classList.remove('hidden');
+        });
+
+        elements.modalCancelBtn.addEventListener('click', () => {
+            elements.confirmModal.classList.add('hidden');
+        });
+
+        elements.modalConfirmBtn.addEventListener('click', () => {
+            state.pois = [];
+            renderMapAndList();
+            syncToFirebase();
+            elements.confirmModal.classList.add('hidden');
+        });
+
+        // 側邊欄控制
+        elements.mobileBtn.addEventListener('click', () => elements.sidebar.classList.add('open'));
+        elements.closeBtn.addEventListener('click', () => elements.sidebar.classList.remove('open'));
+        window.addEventListener('resize', () => {
+            if (window.innerWidth > 768) elements.sidebar.classList.remove('open');
+            map.invalidateSize();
+        });
+
+        // 搜尋功能 ( Nominatim API )
+        let searchTimeout = null;
+        let isComposing = false; // 新增：記錄是否正在使用輸入法(如注音)拼字
+
+        elements.searchInput.addEventListener('compositionstart', () => {
+            isComposing = true;
+        });
+
+        elements.searchInput.addEventListener('compositionend', (e) => {
+            isComposing = false;
+            handleSearchInput(e.target.value);
+        });
+
+        elements.searchInput.addEventListener('input', (e) => {
+            if (isComposing) return; // 若正在拼字則不觸發搜尋，避免產生大量請求
+            handleSearchInput(e.target.value);
+        });
+
+        function handleSearchInput(value) {
+            const query = value.trim();
+            clearTimeout(searchTimeout);
+            if (query.length < 2) {
+                elements.searchResults.classList.add('hidden');
+                return;
+            }
+            // 延長防抖時間至 1200ms，嚴格遵守 Nominatim API 的 1秒1次 頻率限制
+            searchTimeout = setTimeout(() => performSearch(query), 1200);
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!elements.searchInput.contains(e.target) && !elements.searchResults.contains(e.target)) {
+                elements.searchResults.classList.add('hidden');
+            }
+        });
+
+        async function performSearch(query) {
+            elements.searchLoader.style.display = 'block';
+            try {
+                // 將 accept-language 移至 URL 參數，避免自訂 Header 觸發 CORS 預檢被擋
+                const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=tw&limit=5&accept-language=zh-TW`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Network response was not ok');
+                renderSearchResults(await response.json());
+            } catch (error) {
+                elements.searchResults.innerHTML = '<div class="p-3 text-sm text-red-500 text-center"><i class="fas fa-exclamation-triangle"></i> 搜尋請求太頻繁或發生錯誤，請稍後再試。</div>';
+                elements.searchResults.classList.remove('hidden');
+            } finally {
+                elements.searchLoader.style.display = 'none';
+            }
+        }
+
+        function renderSearchResults(results) {
+            elements.searchResults.innerHTML = '';
+            if (results.length === 0) {
+                elements.searchResults.innerHTML = '<div class="p-3 text-sm text-gray-500 text-center">找不到相關地點</div>';
+            } else {
+                results.forEach(result => {
+                    const item = document.createElement('div');
+                    item.className = 'p-3 border-b border-gray-100 hover:bg-blue-50 cursor-pointer text-sm transition-colors';
+                    const parts = result.display_name.split(', ');
+                    item.innerHTML = `
+                        <div class="font-medium text-gray-800">${escapeHTML(parts[0])}</div>
+                        <div class="text-xs text-gray-500 truncate mt-0.5">${escapeHTML(parts.slice(1, 3).join(', '))}</div>
+                    `;
+                    item.addEventListener('click', () => {
+                        const lat = parseFloat(result.lat);
+                        const lng = parseFloat(result.lon);
+                        map.flyTo([lat, lng], 16, { duration: 1.5 });
+                        setTimeout(() => {
+                            state.pois.push({
+                                id: 'poi_' + Date.now(),
+                                lat, lng, 
+                                title: parts[0], 
+                                description: result.display_name,
+                                timestamp: Date.now()
+                            });
+                            renderMapAndList();
+                            syncToFirebase();
+                        }, 1500);
+                        elements.searchResults.classList.add('hidden');
+                        elements.searchInput.value = '';
+                    });
+                    elements.searchResults.appendChild(item);
+                });
+            }
+            elements.searchResults.classList.remove('hidden');
+        }
+
+        function escapeHTML(str) {
+            if (!str) return '';
+            return str.replace(/[&<>'"]/g, tag => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+            }[tag] || tag));
+        }
+
+        // 啟動應用程式
+        setTimeout(() => map.invalidateSize(), 100);
+        initFirebase(); // 開始 Firebase 驗證並掛載資料
+    </script>
+</body>
+</html>
